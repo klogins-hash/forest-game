@@ -1,0 +1,28 @@
+# Logs and runtime files
+*.log
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Don't commit the local PID file or the deploy log
+# (deploy.sh writes these to ~/.hermes/, but in case someone runs it in-tree)
+.deploy/
+*.pid
+
+# Node / npm artifacts (if we add a build later)
+node_modules/
+dist/
+build/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Environment / secrets
+.env
+.env.local

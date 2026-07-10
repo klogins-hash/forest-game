@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Forest Chop</title>
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: #87a96b; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  #hud {
+    position: fixed; top: 14px; left: 14px;
+    color: #fff; text-shadow: 1px 1px 2px rgba(0,0,0,.6);
+    font-size: 14px; line-height: 1.5;
+    user-select: none; pointer-events: none;
+  }
+  #hud b { font-size: 18px; }
+  #help {
+    position: fixed; bottom: 14px; left: 14px;
+    color: #fff; text-shadow: 1px 1px 2px rgba(0,0,0,.6);
+    font-size: 12px; line-height: 1.6;
+    user-select: none; pointer-events: none;
+    background: rgba(0,0,0,.25); padding: 8px 12px; border-radius: 8px;
+  }
+  #msg {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    color: #fff; text-shadow: 0 0 8px rgba(0,0,0,.8);
+    font-size: 28px; font-weight: 700;
+    opacity: 0; transition: opacity .25s;
+    user-select: none; pointer-events: none;
+  }
+  #msg.show { opacity: 1; }
+  #title { font-size: 22px; font-weight: 800; margin-bottom: 6px; }
+  #loading { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; color: #fff; background: #87a96b; font-size: 24px; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+  }
+}
+</script>
+</head>
+<body>
+<div id="loading">Loading forest…</div>
+<div id="hud" style="display:none">
+  <div id="title">🌲 Forest Chop</div>
+  <div>Trees felled: <b id="count">0</b></div>
+</div>
+<div id="help" style="display:none">
+  <b>WASD</b> or <b>Arrow keys</b> — move<br>
+  <b>Space</b> — chop nearest tree<br>
+  <b>Mouse drag</b> — rotate camera
+</div>
+<div id="msg"></div>
+
+<script type="module">
+import * as THREE from 'three';
+
+// ---------- Renderer / Scene / Camera ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x87ceeb);
+scene.fog = new THREE.Fog(0x87ceeb, 30, 90);
+
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 200);
+camera.position.set(0, 8, 12);
+
+// ---------- Lights ----------
+const sun = new THREE.DirectionalLight(0xfff4d6, 1.4);
+sun.position.set(20, 30, 15);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -30;
+sun.shadow.camera.right = 30;
+sun.shadow.camera.top = 30;
+sun.shadow.camera.bottom = -30;
+sun.shadow.camera.near = 0.5;
+sun.shadow.camera.far = 80;
+sun.shadow.bias = -0.0005;
+scene.add(sun);
+scene.add(new THREE.HemisphereLight(0xb1d8ff, 0x4d6b3a, 0.55));
+
+// ---------- Ground ----------
+const groundGeo = new THREE.PlaneGeometry(200, 200, 32, 32);
+groundGeo.rotateX(-Math.PI / 2);
+// gentle terrain bumps
+const pos = groundGeo.attributes.position;
+for (let i = 0; i < pos.count; i++) {
+  pos.setY(i, (Math.sin(pos.getX(i) * 0.15) + Math.cos(pos.getZ(i) * 0.18)) * 0.25);
+}
+groundGeo.computeVertexNormals();
+const groundMat = new THREE.MeshStandardMaterial({ color: 0x4f7a3a, roughness: 0.95 });
+const ground = new THREE.Mesh(groundGeo, groundMat);
+ground.receiveShadow = true;
+scene.add(ground);
+
+// ---------- Player (simple character) ----------
+const player = new THREE.Group();
+const bodyMat = new THREE.MeshStandardMaterial({ color: 0x2b6cb0, roughness: 0.7 });
+const skinMat = new THREE.MeshStandardMaterial({ color: 0xf2c7a0, roughness: 0.6 });
+const pantsMat = new THREE.MeshStandardMaterial({ color: 0x2d3748, roughness: 0.8 });
+
+const torso = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.9, 0.45), bodyMat);
+torso.position.y = 1.05;
+torso.castShadow = true;
+player.add(torso);
+
+const head = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 0.5), skinMat);
+head.position.y = 1.75;
+head.castShadow = true;
+player.add(head);
+
+const leftLeg = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.8, 0.3), pantsMat);
+leftLeg.position.set(-0.18, 0.4, 0);
+leftLeg.castShadow = true;
+player.add(leftLeg);
+
+const rightLeg = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.8, 0.3), pantsMat);
+rightLeg.position.set(0.18, 0.4, 0);
+rightLeg.castShadow = true;
+player.add(rightLeg);
+
+// axe (in player's right hand)
+const axe = new THREE.Group();
+const handle = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.7, 0.08), new THREE.MeshStandardMaterial({ color: 0x6b4423 }));
+handle.position.y = -0.35;
+axe.add(handle);
+const blade = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.25, 0.06), new THREE.MeshStandardMaterial({ color: 0xb0b8c0, metalness: 0.7, roughness: 0.3 }));
+blade.position.set(0.15, 0.05, 0);
+axe.add(blade);
+axe.position.set(0.45, 1.2, 0.3);
+player.add(axe);
+
+player.position.set(0, 0, 0);
+scene.add(player);
+
+// ---------- Trees ----------
+const trees = [];
+const trunkGeo = new THREE.CylinderGeometry(0.25, 0.35, 2.2, 8);
+const trunkMat = new THREE.MeshStandardMaterial({ color: 0x6b4423, roughness: 0.9 });
+const foliageGeo = new THREE.ConeGeometry(1.1, 2.2, 8);
+const foliageMat = new THREE.MeshStandardMaterial({ color: 0x2f7a2a, roughness: 0.85 });
+
+function makeTree(x, z, scale = 1) {
+  const t = new THREE.Group();
+  const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+  trunk.position.y = 1.1;
+  trunk.castShadow = true;
+  trunk.receiveShadow = true;
+  t.add(trunk);
+  const foliage1 = new THREE.Mesh(foliageGeo, foliageMat);
+  foliage1.position.y = 2.6;
+  foliage1.castShadow = true;
+  t.add(foliage1);
+  const foliage2 = new THREE.Mesh(foliageGeo, foliageMat);
+  foliage2.position.y = 3.4;
+  foliage2.scale.setScalar(0.75);
+  foliage2.castShadow = true;
+  t.add(foliage2);
+  t.position.set(x, 0, z);
+  t.scale.setScalar(scale);
+  t.userData = { health: 3, radius: 1.2 * scale, falling: false, fallProgress: 0, fallDir: new THREE.Vector3(1, 0, 0) };
+  scene.add(t);
+  trees.push(t);
+}
+
+// scatter trees (avoid spawning on top of the player)
+for (let i = 0; i < 80; i++) {
+  let x, z, dist;
+  do {
+    x = (Math.random() - 0.5) * 80;
+    z = (Math.random() - 0.5) * 80;
+    dist = Math.hypot(x, z);
+  } while (dist < 4);
+  const s = 0.8 + Math.random() * 0.7;
+  makeTree(x, z, s);
+}
+
+// a few decorative rocks
+const rockMat = new THREE.MeshStandardMaterial({ color: 0x7a7a7a, roughness: 0.95 });
+for (let i = 0; i < 30; i++) {
+  const r = new THREE.Mesh(new THREE.DodecahedronGeometry(0.4 + Math.random() * 0.5), rockMat);
+  r.position.set((Math.random() - 0.5) * 80, 0.2, (Math.random() - 0.5) * 80);
+  r.castShadow = true;
+  r.receiveShadow = true;
+  scene.add(r);
+}
+
+// ---------- Input ----------
+const keys = {};
+window.addEventListener('keydown', (e) => {
+  keys[e.code] = true;
+  if (e.code === 'Space') { e.preventDefault(); tryChop(); }
+});
+window.addEventListener('keyup', (e) => { keys[e.code] = false; });
+
+// mouse drag to rotate camera
+let camYaw = 0, camPitch = 0.6;
+const camDist = 9;
+let dragging = false, lastX = 0, lastY = 0;
+renderer.domElement.addEventListener('mousedown', (e) => { dragging = true; lastX = e.clientX; lastY = e.clientY; });
+window.addEventListener('mouseup', () => { dragging = false; });
+window.addEventListener('mousemove', (e) => {
+  if (!dragging) return;
+  const dx = e.clientX - lastX, dy = e.clientY - lastY;
+  lastX = e.clientX; lastY = e.clientY;
+  camYaw -= dx * 0.005;
+  camPitch = Math.max(0.15, Math.min(1.4, camPitch - dy * 0.005));
+});
+// touch support
+renderer.domElement.addEventListener('touchstart', (e) => {
+  if (e.touches.length === 1) { dragging = true; lastX = e.touches[0].clientX; lastY = e.touches[0].clientY; }
+});
+window.addEventListener('touchend', () => { dragging = false; });
+window.addEventListener('touchmove', (e) => {
+  if (!dragging || !e.touches[0]) return;
+  const dx = e.touches[0].clientX - lastX, dy = e.touches[0].clientY - lastY;
+  lastX = e.touches[0].clientX; lastY = e.touches[0].clientY;
+  camYaw -= dx * 0.005;
+  camPitch = Math.max(0.15, Math.min(1.4, camPitch - dy * 0.005));
+});
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ---------- Chop logic ----------
+let felled = 0;
+const countEl = document.getElementById('count');
+const msgEl = document.getElementById('msg');
+let msgTimer = 0;
+
+function showMsg(text) {
+  msgEl.textContent = text;
+  msgEl.classList.add('show');
+  msgTimer = 1.0;
+}
+
+function tryChop() {
+  // find nearest standing tree within chopping range
+  let nearest = null, bestDist = Infinity;
+  for (const t of trees) {
+    if (t.userData.falling) continue;
+    const d = player.position.distanceTo(t.position);
+    if (d < 3.2 && d < bestDist) { bestDist = d; nearest = t; }
+  }
+  if (!nearest) { showMsg('Get closer to a tree!'); return; }
+
+  nearest.userData.health -= 1;
+  // shake the tree briefly
+  nearest.position.x += 0.02;
+  setTimeout(() => { if (nearest.parent) nearest.position.x -= 0.02; }, 80);
+
+  // axe swing animation
+  axe.rotation.x = -1.0;
+  setTimeout(() => { axe.rotation.x = 0; }, 150);
+
+  if (nearest.userData.health <= 0) {
+    // start falling
+    const dx = player.position.x - nearest.position.x;
+    const dz = player.position.z - nearest.position.z;
+    nearest.userData.fallDir.set(dx, 0, dz).normalize();
+    nearest.userData.falling = true;
+    nearest.userData.fallProgress = 0;
+    felled += 1;
+    countEl.textContent = felled;
+    showMsg(`🌲 Tree #${felled} down!`);
+  } else {
+    showMsg('Chop! (' + nearest.userData.health + ' hits left)');
+  }
+}
+
+// ---------- Animate ----------
+const clock = new THREE.Clock();
+let walkPhase = 0;
+
+function animate() {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const speed = 6;
+
+  // movement input in camera-relative space
+  const forward = new THREE.Vector3(-Math.sin(camYaw), 0, -Math.cos(camYaw));
+  const right = new THREE.Vector3(Math.cos(camYaw), 0, -Math.sin(camYaw));
+  const move = new THREE.Vector3();
+  if (keys['KeyW'] || keys['ArrowUp']) move.add(forward);
+  if (keys['KeyS'] || keys['ArrowDown']) move.sub(forward);
+  if (keys['KeyD'] || keys['ArrowRight']) move.add(right);
+  if (keys['KeyA'] || keys['ArrowLeft']) move.sub(right);
+  if (move.lengthSq() > 0) {
+    move.normalize().multiplyScalar(speed * dt);
+    player.position.add(move);
+    player.rotation.y = Math.atan2(move.x, move.z);
+    walkPhase += dt * 8;
+  } else {
+    walkPhase *= 0.9;
+  }
+  // leg swing for walking
+  leftLeg.rotation.x = Math.sin(walkPhase) * 0.5;
+  rightLeg.rotation.x = -Math.sin(walkPhase) * 0.5;
+
+  // clamp player to ground bounds
+  player.position.x = Math.max(-95, Math.min(95, player.position.x));
+  player.position.z = Math.max(-95, Math.min(95, player.position.z));
+
+  // camera follows player
+  const camOffset = new THREE.Vector3(
+    Math.sin(camYaw) * Math.cos(camPitch) * camDist,
+    Math.sin(camPitch) * camDist,
+    Math.cos(camYaw) * Math.cos(camPitch) * camDist
+  );
+  const camTarget = player.position.clone().add(camOffset);
+  camera.position.lerp(camTarget, 0.15);
+  camera.lookAt(player.position.x, 1.0, player.position.z);
+
+  // update falling trees
+  for (let i = trees.length - 1; i >= 0; i--) {
+    const t = trees[i];
+    if (!t.userData.falling) continue;
+    t.userData.fallProgress += dt * 1.4;
+    const p = Math.min(t.userData.fallProgress, 1);
+    // rotate around the base (lower y) toward fallDir
+    t.rotation.x = p * (Math.PI / 2) * t.userData.fallDir.z;
+    t.rotation.z = -p * (Math.PI / 2) * t.userData.fallDir.x;
+    // drop the base to ground
+    t.position.y = -p * 0.5;
+    if (p >= 1) {
+      // remove after a beat
+      setTimeout(() => { scene.remove(t); }, 800);
+      trees.splice(i, 1);
+    }
+  }
+
+  // fade out messages
+  if (msgTimer > 0) {
+    msgTimer -= dt;
+    if (msgTimer <= 0) msgEl.classList.remove('show');
+  }
+
+  renderer.render(scene, camera);
+  requestAnimationFrame(animate);
+}
+
+// ---------- Boot ----------
+document.getElementById('loading').style.display = 'none';
+document.getElementById('hud').style.display = 'block';
+document.getElementById('help').style.display = 'block';
+animate();
+</script>
+</body>
+</html>
